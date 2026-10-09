@@ -1,0 +1,15 @@
+# Copia este archivo a terraform.tfvars y rellena los valores.
+# terraform.tfvars NO se sube a git (está en .gitignore).
+
+# Región que muestra el banner de AWS Learner Lab. Debe coincidir con las credenciales.
+aws_region = "us-east-1"
+
+project_name = "zerotrust-webapp"
+
+# Nombre del key pair YA EXISTENTE en esa región.
+# En AWS Academy Learner Lab casi siempre se llama vockey.
+key_pair_name = "vockey"
+
+# Tu IP pública con /32. Obténla en https://ifconfig.me
+# Ejemplo: admin_ip = "189.203.10.4/32"
+admin_ip = "TU.IP.PUBLICA/32"

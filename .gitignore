@@ -1,0 +1,15 @@
+# Secretos: no subir nunca
+credenciales.md
+*.pem
+*.ppk
+.env
+backend/.env
+terraform/terraform.tfvars
+terraform/.terraform/
+terraform/*.tfstate
+terraform/*.tfstate.backup
+
+# Dependencias y builds
+node_modules/
+frontend/dist/
+backend/dist/
