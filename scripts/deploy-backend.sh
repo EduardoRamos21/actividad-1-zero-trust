@@ -78,8 +78,9 @@ scp "${SSH_OPTS[@]}" "${SCRIPT_DIR}/setup-backend.sh" "ubuntu@${BACKEND_IP}:/tmp
 scp "${SSH_OPTS[@]}" /tmp/zerotrust-backend.tgz "ubuntu@${BACKEND_IP}:/tmp/zerotrust-backend.tgz"
 ssh "${SSH_OPTS[@]}" "ubuntu@${BACKEND_IP}" "tar -xzf /tmp/zerotrust-backend.tgz -C /tmp/zerotrust-backend"
 
-echo ">>> Instalando el servicio en el Backend"
-ssh "${SSH_OPTS[@]}" "ubuntu@${BACKEND_IP}" "sudo bash /tmp/setup-backend.sh"
+echo ">>> Instalando el servicio en el Backend (con UFW)"
+FRONTEND_CIDR="${FRONTEND_CIDR:-10.0.0.0/16}"
+ssh "${SSH_OPTS[@]}" "ubuntu@${BACKEND_IP}" "sudo FRONTEND_CIDR='${FRONTEND_CIDR}' ADMIN_IP='${ADMIN_IP:-}' bash /tmp/setup-backend.sh"
 
 echo ">>> Salud de la API, vista desde el Frontend"
 curl -fsS "http://${BACKEND_IP}:3000/api/health"

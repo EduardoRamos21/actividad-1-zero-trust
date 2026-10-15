@@ -81,4 +81,49 @@ systemctl enable zerotrust-api
 systemctl restart zerotrust-api
 sleep 2
 systemctl --no-pager --full status zerotrust-api
-echo "API instalada. Prueba local: curl -fsS http://127.0.0.1:3000/api/health"
+
+# ============================================================================
+# UFW — Firewall de host en Backend (Zero Trust: defensa en profundidad)
+# ============================================================================
+# Variables de entorno esperadas (las pasa deploy-backend.sh):
+#   FRONTEND_CIDR — CIDR de la VPC del Frontend (e.g. 10.0.0.0/16)
+#   ADMIN_IP      — IP del admin /32 para SSH via peering (opcional)
+FRONTEND_CIDR="${FRONTEND_CIDR:-10.0.0.0/16}"
+ADMIN_IP="${ADMIN_IP:-}"
+
+echo ">>> Configurando UFW en Backend"
+echo "    Frontend CIDR: ${FRONTEND_CIDR}"
+echo "    Admin IP:      ${ADMIN_IP:-no indicada}"
+
+ufw --force reset
+
+# Políticas por defecto: denegar TODO (entrada y salida)
+ufw default deny incoming
+ufw default deny outgoing
+
+# API (puerto 3000) — SOLO desde la VPC del Frontend
+ufw allow from "${FRONTEND_CIDR}" to any port 3000 proto tcp comment 'API desde Frontend'
+
+# SSH — desde la VPC del Frontend (bastion pattern)
+ufw allow from "${FRONTEND_CIDR}" to any port 22 proto tcp comment 'SSH desde Frontend (bastion)'
+
+# Si se provee la IP del admin, permitir SSH directo (por si está ruteado)
+if [[ -n "${ADMIN_IP}" ]]; then
+  ufw allow from "${ADMIN_IP}" to any port 22 proto tcp comment 'SSH admin directo'
+fi
+
+# Egress: solo hacia el Frontend (respuestas API y SSH)
+ufw allow out to "${FRONTEND_CIDR}" comment 'Salida hacia Frontend VPC'
+
+# Permitir loopback (necesario para que la API responda a curl localhost)
+ufw allow in on lo
+ufw allow out on lo
+
+ufw --force enable
+echo "    UFW activo en Backend:"
+ufw status verbose
+
+echo ""
+echo "API instalada y UFW configurado."
+echo "Prueba local: curl -fsS http://127.0.0.1:3000/api/health"
+echo "Estado UFW:   sudo ufw status numbered"

@@ -85,6 +85,27 @@ output "backend_sg_id" {
   value       = aws_security_group.backend_sg.id
 }
 
+# --- ALB + WAF ---
+output "alb_dns_name" {
+  description = "DNS del Application Load Balancer, punto de entrada protegido por WAF"
+  value       = aws_lb.frontend.dns_name
+}
+
+output "alb_arn" {
+  description = "ARN del Application Load Balancer"
+  value       = aws_lb.frontend.arn
+}
+
+output "waf_acl_id" {
+  description = "ID del Web ACL de WAF"
+  value       = aws_wafv2_web_acl.frontend_waf.id
+}
+
+output "waf_acl_arn" {
+  description = "ARN del Web ACL de WAF"
+  value       = aws_wafv2_web_acl.frontend_waf.arn
+}
+
 # --- Resumen de Conexión ---
 output "resumen_conexion" {
   description = "Resumen de las conexiones de la arquitectura"
@@ -106,13 +127,20 @@ output "resumen_conexion" {
   ║                                                              ║
   ║  VPC Peering:   ${aws_vpc_peering_connection.frontend_to_backend.id}
   ║                                                              ║
+  ║  ALB:           ${aws_lb.frontend.dns_name}
+  ║  WAF ACL:       ${aws_wafv2_web_acl.frontend_waf.name}
+  ║                                                              ║
   ║  SSH al Frontend:                                            ║
   ║    ssh -i <key>.pem ubuntu@${aws_eip.frontend_eip.public_ip}
   ║                                                              ║
   ║  SSH al Backend (via Frontend como bastion):                 ║
   ║    ssh -J ubuntu@${aws_eip.frontend_eip.public_ip} ubuntu@${aws_instance.backend.private_ip}
   ║                                                              ║
+  ║  DuckDNS: apunta el dominio a una IP publica del ALB, no a la EIP.
+  ║  La EIP ${aws_eip.frontend_eip.public_ip} queda solo para SSH.
+  ║                                                              ║
   ╚══════════════════════════════════════════════════════════════╝
 
   EOT
 }
+

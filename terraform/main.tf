@@ -61,6 +61,7 @@ data "aws_availability_zones" "available" {
 locals {
   ami_id = var.ami_id != "" ? var.ami_id : data.aws_ami.ubuntu_2204.id
   az     = coalesce(var.frontend_az, data.aws_availability_zones.available.names[0])
+  az_b   = data.aws_availability_zones.available.names[1]
 }
 
 # ============================================================================
@@ -121,9 +122,27 @@ resource "aws_route_table" "frontend_public_rt" {
   }
 }
 
+# Segunda subred pública: el ALB de AWS exige dos zonas de disponibilidad.
+resource "aws_subnet" "frontend_public_b" {
+  vpc_id                  = aws_vpc.frontend.id
+  cidr_block              = var.frontend_public_subnet_b_cidr
+  availability_zone       = local.az_b
+  map_public_ip_on_launch = true
+
+  tags = {
+    Name = "${var.project_name}-frontend-public-subnet-b"
+    Tier = "public"
+  }
+}
+
 # Asociación de la tabla de rutas con la subred del Frontend
 resource "aws_route_table_association" "frontend_public_rta" {
   subnet_id      = aws_subnet.frontend_public.id
+  route_table_id = aws_route_table.frontend_public_rt.id
+}
+
+resource "aws_route_table_association" "frontend_public_b_rta" {
+  subnet_id      = aws_subnet.frontend_public_b.id
   route_table_id = aws_route_table.frontend_public_rt.id
 }
 
@@ -212,29 +231,62 @@ resource "aws_vpc_peering_connection_options" "dns" {
 # 4. SECURITY GROUPS (Principio de Mínimo Privilegio - Zero Trust)
 # ============================================================================
 
-# --- Security Group del Frontend ---
-# Permite: HTTP(80), HTTPS(443) desde Internet + SSH(22) solo desde admin_ip
-resource "aws_security_group" "frontend_sg" {
-  name        = "${var.project_name}-frontend-sg"
-  description = "SG Frontend: HTTP/HTTPS publico, SSH restringido a IP admin"
+# --- Security Group del ALB (punto de entrada público + WAF) ---
+resource "aws_security_group" "alb_sg" {
+  name        = "${var.project_name}-alb-sg"
+  description = "SG ALB: HTTP/HTTPS publico. El WAF se asocia a este balanceador."
   vpc_id      = aws_vpc.frontend.id
 
-  # HTTP - Acceso público (Nginx sirve la app React)
   ingress {
-    description = "HTTP desde Internet"
+    description = "HTTP publico, redirige a HTTPS"
     from_port   = 80
     to_port     = 80
     protocol    = "tcp"
     cidr_blocks = ["0.0.0.0/0"]
   }
 
-  # HTTPS - Acceso público (Certbot / Let's Encrypt)
   ingress {
-    description = "HTTPS desde Internet"
+    description = "HTTPS publico protegido por WAF"
     from_port   = 443
     to_port     = 443
     protocol    = "tcp"
     cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  egress {
+    description = "Hacia Nginx en la VPC del Frontend"
+    from_port   = 80
+    to_port     = 443
+    protocol    = "tcp"
+    cidr_blocks = [var.frontend_vpc_cidr]
+  }
+
+  tags = {
+    Name = "${var.project_name}-alb-sg"
+  }
+}
+
+# --- Security Group del Frontend ---
+# Web solo desde el ALB. SSH solo desde la IP del administrador.
+resource "aws_security_group" "frontend_sg" {
+  name        = "${var.project_name}-frontend-sg"
+  description = "SG Frontend: HTTP/HTTPS publico, SSH restringido a IP admin"
+  vpc_id      = aws_vpc.frontend.id
+
+  ingress {
+    description     = "HTTP desde el ALB"
+    from_port       = 80
+    to_port         = 80
+    protocol        = "tcp"
+    security_groups = [aws_security_group.alb_sg.id]
+  }
+
+  ingress {
+    description     = "HTTPS desde el ALB hacia Nginx"
+    from_port       = 443
+    to_port         = 443
+    protocol        = "tcp"
+    security_groups = [aws_security_group.alb_sg.id]
   }
 
   # SSH - SOLO desde la IP del administrador (Zero Trust)
@@ -403,3 +455,183 @@ resource "aws_instance" "backend" {
     Role = "backend-api"
   }
 }
+
+# ============================================================================
+# 6. Application Load Balancer — punto de entrada público del Frontend
+# ============================================================================
+# CloudFront está denegado en el Learner Lab. El ALB sí se puede crear y es
+# un recurso al que AWS WAF regional se puede asociar. El certificado es el
+# de Let's Encrypt, importado en ACM. Nginx sigue terminando TLS en la EC2.
+
+resource "aws_lb" "frontend" {
+  name                       = "${var.project_name}-alb"
+  load_balancer_type         = "application"
+  internal                   = false
+  security_groups            = [aws_security_group.alb_sg.id]
+  subnets                    = [aws_subnet.frontend_public.id, aws_subnet.frontend_public_b.id]
+  drop_invalid_header_fields = true
+  enable_deletion_protection = false
+
+  tags = {
+    Name = "${var.project_name}-alb"
+  }
+}
+
+resource "aws_lb_target_group" "frontend" {
+  name        = "${var.project_name}-fe-tg"
+  port        = 443
+  protocol    = "HTTPS"
+  vpc_id      = aws_vpc.frontend.id
+  target_type = "instance"
+
+  health_check {
+    protocol            = "HTTPS"
+    port                = "443"
+    path                = "/"
+    matcher             = "200"
+    healthy_threshold   = 2
+    unhealthy_threshold = 2
+    interval            = 15
+    timeout             = 5
+  }
+
+  tags = {
+    Name = "${var.project_name}-fe-tg"
+  }
+}
+
+resource "aws_lb_target_group_attachment" "frontend" {
+  target_group_arn = aws_lb_target_group.frontend.arn
+  target_id        = aws_instance.frontend.id
+  port             = 443
+}
+
+resource "aws_lb_listener" "https" {
+  load_balancer_arn = aws_lb.frontend.arn
+  port              = 443
+  protocol          = "HTTPS"
+  ssl_policy        = "ELBSecurityPolicy-TLS13-1-2-2021-06"
+  certificate_arn   = var.acm_certificate_arn
+
+  default_action {
+    type             = "forward"
+    target_group_arn = aws_lb_target_group.frontend.arn
+  }
+}
+
+resource "aws_lb_listener" "http" {
+  load_balancer_arn = aws_lb.frontend.arn
+  port              = 80
+  protocol          = "HTTP"
+
+  default_action {
+    type = "redirect"
+
+    redirect {
+      port        = "443"
+      protocol    = "HTTPS"
+      status_code = "HTTP_301"
+    }
+  }
+}
+
+# ============================================================================
+# 7. AWS WAF v2 — Protección del Frontend (reglas administradas + rate limit)
+# ============================================================================
+# Alcance REGIONAL: se asocia al ALB. El alcance CLOUDFRONT no sirve aquí
+# porque el lab niega cloudfront:CreateDistribution.
+
+resource "aws_wafv2_web_acl" "frontend_waf" {
+  name        = "${var.project_name}-waf"
+  description = "WAF para el Frontend: AWS Managed Rules + Rate Limiting"
+  scope       = "REGIONAL"
+
+  default_action {
+    allow {}
+  }
+
+  # Regla 1: SQLi. El Common Rule Set ya no incluye esas firmas.
+  rule {
+    name     = "AWSManagedRulesSQLiRuleSet"
+    priority = 1
+
+    override_action {
+      none {}
+    }
+
+    statement {
+      managed_rule_group_statement {
+        name        = "AWSManagedRulesSQLiRuleSet"
+        vendor_name = "AWS"
+      }
+    }
+
+    visibility_config {
+      cloudwatch_metrics_enabled = true
+      metric_name                = "${var.project_name}-sqli-rules"
+      sampled_requests_enabled   = true
+    }
+  }
+
+  # Regla 2: AWS Managed Rules — Common Rule Set (XSS y otras amenazas web)
+  rule {
+    name     = "AWSManagedRulesCommonRuleSet"
+    priority = 2
+
+    override_action {
+      none {}
+    }
+
+    statement {
+      managed_rule_group_statement {
+        name        = "AWSManagedRulesCommonRuleSet"
+        vendor_name = "AWS"
+      }
+    }
+
+    visibility_config {
+      cloudwatch_metrics_enabled = true
+      metric_name                = "${var.project_name}-common-rules"
+      sampled_requests_enabled   = true
+    }
+  }
+
+  # Regla 2: Rate Limiting — máximo 100 peticiones en 5 minutos por IP
+  rule {
+    name     = "RateLimitRule"
+    priority = 3
+
+    action {
+      block {}
+    }
+
+    statement {
+      rate_based_statement {
+        limit              = 100
+        aggregate_key_type = "IP"
+      }
+    }
+
+    visibility_config {
+      cloudwatch_metrics_enabled = true
+      metric_name                = "${var.project_name}-rate-limit"
+      sampled_requests_enabled   = true
+    }
+  }
+
+  visibility_config {
+    cloudwatch_metrics_enabled = true
+    metric_name                = "${var.project_name}-waf-acl"
+    sampled_requests_enabled   = true
+  }
+
+  tags = {
+    Name = "${var.project_name}-waf"
+  }
+}
+
+resource "aws_wafv2_web_acl_association" "frontend" {
+  resource_arn = aws_lb.frontend.arn
+  web_acl_arn  = aws_wafv2_web_acl.frontend_waf.arn
+}
+

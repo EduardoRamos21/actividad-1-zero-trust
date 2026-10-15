@@ -39,6 +39,12 @@ variable "frontend_public_subnet_cidr" {
   default     = "10.0.1.0/24"
 }
 
+variable "frontend_public_subnet_b_cidr" {
+  description = "Segunda subred pública. Un ALB exige dos zonas de disponibilidad."
+  type        = string
+  default     = "10.0.2.0/24"
+}
+
 variable "frontend_az" {
   description = "Zona de disponibilidad del Frontend. Null = la primera AZ disponible de la región."
   type        = string
@@ -111,4 +117,14 @@ variable "backend_api_port" {
   description = "Puerto en el que escucha la API del Backend (Node.js)"
   type        = number
   default     = 3000
+}
+
+variable "acm_certificate_arn" {
+  description = "ARN del certificado en ACM para el HTTPS del ALB. Es el certificado de Let's Encrypt importado; no va en git."
+  type        = string
+
+  validation {
+    condition     = can(regex("^arn:aws:acm:", var.acm_certificate_arn))
+    error_message = "acm_certificate_arn debe ser un ARN de ACM en us-east-1."
+  }
 }

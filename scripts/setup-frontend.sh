@@ -124,6 +124,14 @@ EOF
 
 ln -sfn "/etc/nginx/sites-available/${DOMAIN}" /etc/nginx/sites-enabled/
 rm -f /etc/nginx/sites-enabled/default
+
+# El ALB es el cliente TCP. Sin esto, Fail2Ban vería la IP del balanceador.
+cat > /etc/nginx/conf.d/real-ip-alb.conf <<'EOF'
+set_real_ip_from 10.0.0.0/16;
+real_ip_header X-Forwarded-For;
+real_ip_recursive on;
+EOF
+
 nginx -t
 systemctl enable nginx
 systemctl restart nginx
@@ -174,9 +182,43 @@ SAMPLE=/tmp/fail2ban-sample.log
 echo '203.0.113.50 - - [07/Oct/2026:12:00:00 +0000] "POST /api/auth/login HTTP/1.1" 401 80 "-" "curl/8.0"' > "${SAMPLE}"
 fail2ban-regex "${SAMPLE}" /etc/fail2ban/filter.d/nginx-login-abuse.conf || true
 
+# ============================================================================
+# [6/6] UFW — Firewall de host (Zero Trust: defensa en profundidad)
+# ============================================================================
+echo ">>> [6/6] Configurando UFW en Frontend"
+
+# Resetear para partir de un estado limpio (no interactivo)
+ufw --force reset
+
+# Políticas por defecto: denegar todo entrante, permitir saliente
+ufw default deny incoming
+ufw default allow outgoing
+
+# Puerto 80 — HTTP (Nginx, Certbot challenge, redirige a HTTPS)
+ufw allow 80/tcp comment 'HTTP - Nginx / Certbot'
+
+# Puerto 443 — HTTPS (tráfico web público)
+ufw allow 443/tcp comment 'HTTPS - Nginx'
+
+# SSH — SOLO desde la IP del administrador (/32)
+if [[ -n "${ADMIN_IP}" ]]; then
+  ufw allow from "${ADMIN_IP}" to any port 22 proto tcp comment 'SSH admin'
+  echo "    SSH permitido solo desde ${ADMIN_IP}"
+else
+  echo "    ⚠️  No se indicó IP admin; SSH abierto temporalmente a todo."
+  echo "       Cierra esto después con: ufw delete allow 22/tcp"
+  ufw allow 22/tcp comment 'SSH temporal - cerrar después'
+fi
+
+# Activar UFW (--force para no pedir confirmación)
+ufw --force enable
+echo "    UFW activo:"
+ufw status verbose
+
 echo ""
-echo "Nginx y Fail2Ban quedaron activos en HTTP."
+echo "Nginx, Fail2Ban y UFW quedaron activos en HTTP."
 echo "Siguiente paso, cuando el DNS de ${DOMAIN} apunte a la Elastic IP:"
 echo "  sudo $(dirname "$0")/enable-https.sh ${DOMAIN}"
 echo "Publica el build de React en /var/www/${DOMAIN}/html/"
 echo "Estado de Fail2Ban: sudo fail2ban-client status nginx-login-abuse"
+echo "Estado de UFW:      sudo ufw status numbered"
